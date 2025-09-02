@@ -1,0 +1,19 @@
+name: stochastic_PVB
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - jupyter
+  - pytorch
+  - torchvision
+  - torchaudio
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - requests
+  - requests-cache
+  - pip:
+      - openmeteo-requests
+      - retry-requests
