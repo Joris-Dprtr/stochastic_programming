@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from matplotlib import pyplot as plt
 
+
 class LSTM(nn.Module):
     def __init__(
             self,
