@@ -24,13 +24,13 @@ def _beta_nll(alpha, beta, x):
 
     # Compute log-likelihood for data
     log_likelihood = ((alpha - 1) * torch.log(x) +
-                      (beta - 1) * torch.log(1 - x)).sum()
+                      (beta - 1) * torch.log(1 - x))
 
     # Normalization term using log Gamma (torch.lgamma is log Gamma)
     normalization = torch.lgamma(alpha) + torch.lgamma(beta) - torch.lgamma(alpha + beta)
 
     # Negative log-likelihood
-    nll = - (log_likelihood - x.shape[0] * normalization)
+    nll = - (log_likelihood - normalization)
     return nll
 
 
