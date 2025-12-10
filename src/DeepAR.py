@@ -21,7 +21,6 @@ def _beta_nll(alpha, beta, x):
     eps = 1e-6
     x = x.clamp(eps, 1 - eps)
 
-
     # Compute log-likelihood for data
     log_likelihood = ((alpha - 1) * torch.log(x) +
                       (beta - 1) * torch.log(1 - x))
