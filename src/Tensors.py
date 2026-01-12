@@ -39,7 +39,7 @@ def _scale(train, test, domain_min=None, domain_max=None):
 class Tensors:
     def __init__(self,
                  data,
-                 target: str,
+                 target: list,
                  past_features: list,
                  future_features: list,
                  lags: int,
@@ -82,6 +82,8 @@ class Tensors:
         :return: tensors, split in a train and test set
         """
 
+        scaling = []
+
         start = self.lags + self.gap
         prediction_length = len(self.data) - start                                    # we can't forecast the first [lags] + [gap] timesteps
         divider = self.forecast_gap + self.forecast_period                            # The number of predictions is based on the forecast gap + forecast length
@@ -100,14 +102,19 @@ class Tensors:
         # Storage
         max_len = max(self.forecast_period, self.lags)
         feat_count = len(self.past_features) + len(self.future_features)
+        target_count = len(self.target)
 
         X_train = torch.zeros(train_len, max_len, feat_count)                         # The dimensions of our X_Train tensor (Samples, period, features)
         X_test = torch.zeros(test_len, max_len, feat_count)                           # The dimensions of our X_Test tensor (Samples, period, features)
+        y_train = torch.zeros(train_len, self.forecast_period, target_count)
+        y_test = torch.zeros(test_len, self.forecast_period, target_count)
+
 
         # |Past features|
         for i, feat in enumerate(self.past_features):
             pad_left = max(0, self.forecast_period - self.lags)                       # Padding in case lags and forecast period are of different length
-            train, test = self._feature_block(self.data[feat],                        # Take the correct slice of data and apply a moving window and scaling
+            train, test, min_past, max_past = self._feature_block(
+                                              self.data[feat],                        # Take the correct slice of data and apply a moving window and scaling
                                               train_len,
                                               test_len,
                                               self.lags,
@@ -116,11 +123,13 @@ class Tensors:
                                               idx=i)
             X_train[:, :, i] = train                                                  # Inpute the feature in our overall tensor
             X_test[:, :, i] = test
+            scaling.append([min_past,max_past])
 
         # |Future features|                                                           # Identical to the past features
         for j, feat in enumerate(self.future_features):
             pad_left = max(0, self.lags - self.forecast_period)
-            train, test = self._feature_block(self.data[feat][start:],
+            train, test, min_future, max_future = self._feature_block(
+                                              self.data[feat][start:],
                                               train_len,
                                               test_len,
                                               self.forecast_period,
@@ -129,16 +138,23 @@ class Tensors:
                                               idx=len(self.past_features) + j)
             X_train[:, :, len(self.past_features) + j] = train
             X_test[:, :, len(self.past_features) + j] = test
+            scaling.append([min_future, max_future])
 
         # --- Target ---
-        y_train, y_test = self._feature_block(self.data[self.target][start:],
-                                              train_len,
-                                              test_len,
-                                              self.forecast_period,
-                                              divider,
-                                              idx=0)
+        for k, feat in enumerate(self.target):
+            train, test, min_y, max_y = self._feature_block(
+                                                  self.data[feat][start:],
+                                                  train_len,
+                                                  test_len,
+                                                  self.forecast_period,
+                                                  divider,
+                                                  idx=k)
+            y_train[:,:,k] = train
+            y_test[:,:,k] = test
 
-        return X_train, X_test, y_train, y_test
+            scaling.append([min_y, max_y])
+
+        return X_train, X_test, y_train, y_test, scaling
 
     def _feature_block(self,
                        arr,
@@ -180,4 +196,4 @@ class Tensors:
         dmax = self.domain_max[idx] if isinstance(self.domain_max, list) else None
         train, test = _scale(train, test, domain_min=dmin, domain_max=dmax)
 
-        return torch.tensor(train, dtype=torch.float32), torch.tensor(test, dtype=torch.float32)
+        return torch.tensor(train, dtype=torch.float32), torch.tensor(test, dtype=torch.float32), dmin, dmax

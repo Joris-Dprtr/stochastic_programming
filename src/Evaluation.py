@@ -35,3 +35,31 @@ def calculate_crps_ensemble(samples: torch.Tensor, obs: torch.Tensor) -> torch.T
     mean_crps = torch.tensor(np.mean(crps_scores), dtype=samples.dtype)
 
     return mean_crps
+
+def masked_interval_coverage(samples, y_true, alpha=0.8, eps=1e-5):
+    """
+    Computes overall empirical coverage, excluding zero-production periods.
+
+    samples: (D, H, S)
+    y_true:  (D, H)
+    alpha: nominal interval level
+    eps: threshold to define daylight / non-zero PV
+    """
+    lower_q = (1 - alpha) / 2
+    upper_q = 1 - lower_q
+
+    # Quantiles over scenarios
+    lower = np.quantile(samples, lower_q, axis=-1)
+    upper = np.quantile(samples, upper_q, axis=-1)
+
+    # Daylight mask
+    mask = y_true > eps
+
+    # Coverage indicator
+    covered = (y_true >= lower) & (y_true <= upper)
+
+    # Aggregate only valid points
+    if mask.sum() == 0:
+        return np.nan
+
+    return covered[mask].mean()
