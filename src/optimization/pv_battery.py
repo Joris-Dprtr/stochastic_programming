@@ -40,20 +40,20 @@ class PV_battery:
     def create_optimization_problem(self, T):
 
         # Define Variables
-        imp = cp.Variable(T)
-        exp = cp.Variable(T)
-        bat_energy = cp.Variable(T + 1)
-        mode = cp.Variable(T)
-        bat_charge = cp.Variable(T)
-        bat_discharge = cp.Variable(T)
+        imp = cp.Variable(T)                    # Imported energy
+        exp = cp.Variable(T)                    # Exported energy
+        bat_energy = cp.Variable(T + 1)         # Battery energy
+        mode = cp.Variable(T)                   # Mode (charging / discharging) -> Continuous
+        bat_charge = cp.Variable(T)             # Charging
+        bat_discharge = cp.Variable(T)          # Discharging
         variables = [imp, exp, bat_energy, mode, bat_charge, bat_discharge]
 
         # Define Parameters
-        pv = cp.Parameter(T)
-        load = cp.Parameter(T)
-        off = cp.Parameter(T)
-        inj = cp.Parameter(T)
-        initial_battery_energy = cp.Parameter()
+        pv = cp.Parameter(T)                    # PV energy
+        load = cp.Parameter(T)                  # Household load
+        off = cp.Parameter(T)                   # Off-take cost
+        inj = cp.Parameter(T)                   # Injection profit
+        initial_battery_energy = cp.Parameter() # Initial battery energy
 
         parameters = [pv, load, off, inj, initial_battery_energy]
 
@@ -61,7 +61,6 @@ class PV_battery:
         objective = cp.Minimize(cp.sum(imp @ off - exp @ inj))
 
         # Constraints
-
         constraints = [
             pv + imp + bat_discharge == exp + load + bat_charge,
             exp >= 0,
