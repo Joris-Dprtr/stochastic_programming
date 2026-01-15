@@ -3,12 +3,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
 from sklearn_extra.cluster import KMedoids
 
-class Scenario_tool:
+from scipy.stats import wasserstein_distance
+from scipy.spatial.distance import cdist
 
+
+class Scenario_tool:
     HOURS_IN_DAY = 24
 
     def __init__(self,
@@ -24,7 +25,11 @@ class Scenario_tool:
         self.days = days
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def scenario_generation(self, num_scenarios, verbose = 0):
+        self.scenario_data = None
+        self.reduced_scenarios = None
+        self.reduced_labels = None
+
+    def scenario_generation(self, num_scenarios, verbose=0):
 
         days_in_hours = range(0, self.data.shape[0], self.HOURS_IN_DAY)
         scenario_data = torch.empty((self.days, self.HOURS_IN_DAY, num_scenarios), device=self.device)
@@ -75,8 +80,10 @@ class Scenario_tool:
 
                 # h_initial_single shape: [num_layers, 1, hidden_size]
                 # Replicate the initial state num_scenarios times along the batch dimension (dim=1)
-                h_s = h_initial_single.unsqueeze(1).repeat(1, num_scenarios, 1)  # Shape: [num_layers, num_scenarios, hidden_size]
-                c_s = c_initial_single.unsqueeze(1).repeat(1, num_scenarios, 1)  # Shape: [num_layers, num_scenarios, hidden_size]
+                h_s = h_initial_single.unsqueeze(1).repeat(1, num_scenarios,
+                                                           1)  # Shape: [num_layers, num_scenarios, hidden_size]
+                c_s = c_initial_single.unsqueeze(1).repeat(1, num_scenarios,
+                                                           1)  # Shape: [num_layers, num_scenarios, hidden_size]
 
                 # 2. Sample the First Value Y_{t+1} for the entire batch
                 # Sample the entire batch of num_scenarios values for Y_{t+1}
@@ -133,36 +140,131 @@ class Scenario_tool:
                 if verbose > 0:
                     print(str(num_scenarios) + " scenarios generated for day " + str(day_nr))
 
-        return scenario_data
+            self.scenario_data = scenario_data.cpu()
 
-    def reduce_scenarios(self, target_x, method='random'):
+    def scenario_reduction(self, target_scenarios, method='kmedoids', n_init=5):
         """
         tensor_data: (days, 24, num_scenarios)
         target_x: Number of scenarios to keep
         """
         # Reshape to (days, scenarios, 24) for easier indexing by scenario
         # We want to reduce 'scenarios' for EVERY 'day'
-        data = self.data.transpose(0, 2, 1)
-        days, num_scens, hours = data.shape
+        data = self.scenario_data.transpose(2, 1)
+        days = self.scenario_data.shape[0]
 
         reduced_data = []
+        reduced_labels = []
 
         for d in range(days):
-            day_scenarios = data[d]  # Shape (num_scens, 24)
+            day_scenarios = data[d]  # Shape (num_scenarios, 24)
 
             if method == 'kmedoids':
-                # K-Medoids picks actual scenarios as cluster centers
-                kmed = KMedoids(n_clusters=target_x, method='pam', init='k-medoids++')
-                kmed.fit(day_scenarios)
-                reduced = kmed.cluster_centers_
+                best_inertia = np.inf
+                best_centers = None
+                best_labels = None
+
+                for seed in range(n_init):
+                    kmed = KMedoids(
+                        n_clusters=target_scenarios,
+                        method='alternate',
+                        init='k-medoids++',
+                        metric='euclidean',
+                        max_iter=300,
+                        random_state=seed
+                    )
+
+                    kmed.fit(day_scenarios)
+
+                    if kmed.inertia_ < best_inertia:
+                        best_inertia = kmed.inertia_
+                        best_centers = kmed.cluster_centers_
+                        best_labels = kmed.labels_
+
+                reduced = best_centers
+                labels = best_labels
 
             else:
-                reduced = _fast_forward_selection(day_scenarios, target_x)
+                reduced = _fast_forward_selection(day_scenarios, target_scenarios)
+                labels = None
 
             reduced_data.append(reduced)
+            reduced_labels.append(labels)
 
-        # Return as (days, 24, target_x)
-        return np.array(reduced_data).transpose(0, 2, 1)
+        reduced_scenarios = torch.tensor(np.array(reduced_data)).transpose(2, 1)
+        self.reduced_scenarios = reduced_scenarios
+        self.reduced_labels = reduced_labels
+
+    def scenario_reduction_evaluation(self, quantiles=(0.01, 0.05, 0.95, 0.99)):
+        D, H, N = self.scenario_data.shape
+        _, _, K = self.reduced_scenarios.shape
+
+        metrics = {
+            "mean_wasserstein": [],
+            "max_wasserstein": [],
+            "wasserstein_by_hour": [],
+            "mean_error_mean": [],
+            "mean_error_std": [],
+            "quantile_errors": {q: [] for q in quantiles},
+            "reconstruction_error": []
+        }
+
+        for d in range(D):
+            orig = self.scenario_data[d]  # (H, N)
+            red = self.reduced_scenarios[d]  # (H, K)
+
+            # ---- Wasserstein per hour ----
+            wd_h = np.array([
+                wasserstein_distance(orig[h], red[h])
+                for h in range(H)
+            ])
+
+            metrics["mean_wasserstein"].append(wd_h.mean())
+            metrics["max_wasserstein"].append(wd_h.max())
+            metrics["wasserstein_by_hour"].append(wd_h)
+
+            # ---- Moment errors ----
+            mean_err = torch.mean(torch.abs(orig.mean(axis=1) - red.mean(axis=1)))
+            std_err = torch.mean(torch.abs(orig.std(axis=1) - red.std(axis=1)))
+
+            metrics["mean_error_mean"].append(mean_err)
+            metrics["mean_error_std"].append(std_err)
+
+            # ---- Quantile errors ----
+            for q in quantiles:
+                orig_q = torch.quantile(orig, q, 1)
+                red_q = torch.quantile(red, q, 1)
+                metrics["quantile_errors"][q].append(
+                    torch.mean(torch.abs(orig_q - red_q))
+                )
+
+            # ---- Reconstruction error ----
+            # reshape to (N, H) and (K, H)
+            orig_flat = orig.T
+            red_flat = red.T
+
+            Dmat = cdist(orig_flat, red_flat)
+            recon_err = np.mean(np.min(Dmat, axis=1))
+
+            metrics["reconstruction_error"].append(recon_err)
+
+        # ---- Aggregate over days ----
+        summary = {
+            "mean_wasserstein": float(np.mean(metrics["mean_wasserstein"])),
+            "max_wasserstein": float(np.max(metrics["max_wasserstein"])),
+            "mean_error_mean": float(np.mean(metrics["mean_error_mean"])),
+            "mean_error_std": float(np.mean(metrics["mean_error_std"])),
+            "mean_reconstruction_error": float(np.mean(metrics["reconstruction_error"])),
+            "quantile_errors": {
+                q: float(np.mean(metrics["quantile_errors"][q]))
+                for q in quantiles
+            }
+        }
+
+        return {
+            "summary": summary,
+            "by_day": metrics
+        }
+
 
 def _fast_forward_selection(scenarios, n_target):
     """

@@ -24,7 +24,8 @@ class PV_battery:
                  capacity,
                  max_charge,
                  max_discharge,
-                 self_consumption=True,
+                 eff_ch=0.95,
+                 eff_dis=0.95
                  ):
 
         self.house = house
@@ -32,7 +33,8 @@ class PV_battery:
         self.capacity = capacity
         self.max_charge = max_charge
         self.max_discharge = max_discharge
-        self.self_consumption = self_consumption
+        self.eff_ch = eff_ch
+        self.eff_dis = eff_dis
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def create_optimization_problem(self, T):
@@ -60,45 +62,29 @@ class PV_battery:
 
         # Constraints
 
-        if self.self_consumption:
-            constraints = [
-                pv + imp + bat_discharge == exp + load + bat_charge,
-                exp >= 0,
-                imp >= 0,
-                bat_charge >= 0,
-                bat_discharge >= 0,
-                bat_charge <= self.max_charge * (1 - mode),
-                bat_charge <= pv - exp,
-                bat_discharge <= self.max_discharge * mode,
-                bat_energy[0] == initial_battery_energy,
-                bat_energy[-1] == self.capacity * 0.5,
-                bat_energy >= self.capacity * 0.2,
-                bat_energy <= self.capacity * 0.8,
-                mode >= 0,
-                mode <= 1
-            ]
-        else:
-            constraints = [
-                pv + imp + bat_discharge == exp + load + bat_charge,
-                exp >= 0,
-                imp >= 0,
-                bat_charge >= 0,
-                bat_discharge >= 0,
-                bat_charge <= self.max_charge * (1 - mode),
-                bat_discharge <= self.max_discharge * mode,
-                bat_energy[0] == initial_battery_energy,
-                bat_energy[-1] == self.capacity * 0.5,
-                bat_energy >= self.capacity * 0.2,
-                bat_energy <= self.capacity * 0.8,
-                mode >= 0,
-                mode <= 1
-            ]
+        constraints = [
+            pv + imp + bat_discharge == exp + load + bat_charge,
+            exp >= 0,
+            imp >= 0,
+            bat_charge >= 0,
+            bat_discharge >= 0,
+            bat_charge <= self.max_charge * (1 - mode),
+            bat_charge <= pv - exp,
+            bat_discharge <= self.max_discharge * mode,
+            bat_energy[0] == initial_battery_energy,
+            bat_energy[-1] == self.capacity * 0.5,
+            bat_energy >= self.capacity * 0.2,
+            bat_energy <= self.capacity * 0.8,
+            mode >= 0,
+            mode <= 1
+        ]
 
         for t in range(1, T + 1):
             constraints += [
-                bat_energy[t] == bat_energy[t - 1] + bat_charge[t - 1] - bat_discharge[t - 1]
+                bat_energy[t] == bat_energy[t - 1] +
+                (self.eff_ch * bat_charge[t - 1]) -
+                (bat_discharge[t - 1] / self.eff_dis)
             ]
-
         # Optimization problem
         problem = cp.Problem(objective, constraints)
 
